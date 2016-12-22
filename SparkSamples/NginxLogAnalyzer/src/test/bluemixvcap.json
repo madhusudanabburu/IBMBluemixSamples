@@ -1,0 +1,8 @@
+{
+  "tenant_id": "sb8e-31a08100070616-ac6107fb81b2",
+  "tenant_id_full": "fb93c3ca-50ec-4259-9b8e-31a081000706_9fba8690-d9e0-4600-8516-ac6107fb81b2",
+  "cluster_master_url": "https://spark.bluemix.net",
+  "instance_id": "fb93c3ca-50ec-4259-9b8e-31a081000706",
+  "tenant_secret": "1c897c1e-28c9-444e-af24-5cf72e4c439e",
+  "plan": "ibm.SparkService.PayGoPersonal"
+}
