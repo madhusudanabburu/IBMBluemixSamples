@@ -1,0 +1,109 @@
+
+%AddJar http://central.maven.org/maven2/eu/piotrbuda/scalawebsocket_2.10/0.1.1/scalawebsocket_2.10-0.1.1.jar
+%AddJar http://dl.bintray.com/spark-packages/maven/cloudant-labs/spark-cloudant/2.0.0-s_2.11/spark-cloudant-2.0.0-s_2.11.jar
+%AddJar http://central.maven.org/maven2/com/ning/async-http-client/1.8.0/async-http-client-1.8.0.jar
+%AddJar http://central.maven.org/maven2/com/typesafe/scalalogging-log4j_2.10/1.1.0/scalalogging-log4j_2.10-1.1.0.jar
+
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.{DataFrame, SQLContext}
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.streaming.{Time, Seconds, StreamingContext}
+import org.apache.spark.{SparkConf, SparkContext}
+
+val conf = sc.getConf
+conf.set("cloudant.host","83a4d5b3-b0cd-4206-a1dd-b8ede559ef88-bluemix.cloudant.com")
+conf.set("cloudant.username", "83a4d5b3-b0cd-4206-a1dd-b8ede559ef88-bluemix")
+conf.set("cloudant.password","004f4adfb5a46442c3a5e37f6d62eec477c9f3d96781d45f612bfba6afd4b013")
+
+conf.setJars(ClassLoader.getSystemClassLoader.asInstanceOf[java.net.URLClassLoader].getURLs.map(_.toString).toSet.toSeq ++ kernel.interpreter.classLoader.asInstanceOf[java.net.URLClassLoader].getURLs.map(_.toString).toSeq)
+conf.set("spark.driver.allowMultipleContexts", "true")
+conf.set("spark.master","local[*]")
+val scCloudant = new SparkContext(conf)
+scCloudant.getConf.getAll.foreach(println)
+
+
+def writeToDatabse(databaseName: String, df: DataFrame) = {
+    df.write.format("com.cloudant.spark").save(databaseName)
+}
+
+import org.apache.spark.storage.StorageLevel
+import scalawebsocket.WebSocket
+import org.apache.spark.streaming.receiver.Receiver
+import org.apache.spark.Logging
+
+import org.json4s._
+import org.json4s.DefaultFormats
+import org.json4s.jackson.JsonMethods._
+
+case class MeetupEvent(event_id: String,event_name: Option[String],event_url: Option[String],time: Long)
+case class MeetupGroupTopics(topic_name: Option[String],urlkey: Option[String])
+case class MeetupGroup( group_id: Long, group_name: String,group_city: Option[String],group_country: Option[String], group_state: Option[String],  group_urlname: Option[String], group_lat: Option[String],group_lon: Option[String],group_topics: List[MeetupGroupTopics]) 
+case class MeetupMember( member_id: Long, member_name: Option[String],other_services: Option[String],photo: Option[String])
+case class MeetupVenue(venue_id: Long, venue_name: Option[String],lat: Option[String], lon: Option[String])
+case class MeetupRsvp(rsvp_id: Long,response: String,guests: Int, mtime: Long, visibility : String, event: MeetupEvent, group: MeetupGroup, member: MeetupMember, venue: MeetupVenue)
+
+
+class WebSocketReceiver(url: String, storageLevel: StorageLevel) extends Receiver[MeetupRsvp](storageLevel) with Logging {
+  private var webSocket: WebSocket = _
+  
+  def onStart() {
+    try{
+      log("Connecting to WebSocket: " + url)
+      val newWebSocket = WebSocket().open(url).onTextMessage({ msg: String => parseJson(msg) })
+      setWebSocket(newWebSocket)
+      log("Connected to: WebSocket" + url)
+    } catch {
+      case e: Exception => restart("Error starting WebSocket stream", e)
+    }
+  }
+
+  def onStop() {
+    setWebSocket(null)
+    log("WebSocket receiver stopped")
+  }
+
+  private def setWebSocket(newWebSocket: WebSocket) = synchronized {
+    if (webSocket != null) {
+      webSocket.shutdown()
+    }
+    webSocket = newWebSocket
+  }
+
+  private def parseJson(jsonStr: String): Unit =
+  {
+    try {
+      implicit lazy val formats = DefaultFormats
+      val json = parse(jsonStr)
+      val rsvp = json.extract[MeetupRsvp]
+      store(rsvp)
+    } catch {
+       case e: Exception => e.getMessage()
+    }
+  }
+}
+
+
+def persistStream(conf: SparkConf) = {
+    val ssc = new StreamingContext(conf, Seconds(10))
+    val stream = ssc.receiverStream[MeetupRsvp](new WebSocketReceiver("ws://stream.meetup.com/2/rsvps", StorageLevel.MEMORY_ONLY_SER))
+    stream.foreachRDD((rdd: RDD[MeetupRsvp], time: Time) => {
+      val sqlContext = new SQLContext(rdd.sparkContext)  
+      import sqlContext.implicits._
+      val df = rdd.map(data => {
+        data.group
+      }).filter(_.group_state.getOrElse("").equals("TX")).toDF()
+      if(df.collect().length > 0) {
+        writeToDatabse("meetup_group", df)
+        df.show()
+      }
+    })
+    ssc.start()
+    ssc.awaitTerminationOrTimeout(60000)
+}
+
+persistStream(conf)
+
+
+
+
+
